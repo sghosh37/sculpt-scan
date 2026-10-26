@@ -120,6 +120,12 @@ const isPhone = !isQuest && /Android|Mobi/i.test(UA);
 if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
 
 // ---------------- AR scene ----------------
+// three.js reads GPU depth every frame when 'depth-sensing' is on. On phones we use CPU depth,
+// and asking for the GPU texture throws, which would freeze the frame loop. Make it return null instead.
+if (window.XRWebGLBinding && XRWebGLBinding.prototype.getDepthInformation) {
+  const orig = XRWebGLBinding.prototype.getDepthInformation;
+  XRWebGLBinding.prototype.getDepthInformation = function (view) { try { return orig.call(this, view); } catch { return null; } };
+}
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(window.devicePixelRatio);
 renderer.setClearColor(0x000000, 0);
@@ -192,6 +198,33 @@ let centerHit = null;         // phone: viewer-space hit test
 let fanSources = [];          // Quest: depth-ray fan for scanning
 let pendingTap = null;        // input source that asked to place something
 let lastBuilt = null;
+let phoneAimOk = false, tapWait = 0;
+
+// phone: a point straight ahead from the depth map (works before ARCore has found any planes)
+function aimFromDepth(frame, viewer) {
+  const view = viewer.views[0];
+  let di = null;
+  try { di = frame.getDepthInformation(view); } catch { return null; }
+  if (!di) return null;
+  const P = view.projectionMatrix, M = view.transform.matrix;
+  const at = (u, v) => {
+    let d = 0;
+    try { d = di.getDepthInMeters(u, v); } catch { return null; }
+    if (!(d > 0.1 && d < 4)) return null;
+    const xn = u * 2 - 1, yn = 1 - v * 2, xv = d * (xn + P[8]) / P[0], yv = d * (yn + P[9]) / P[5], zv = -d;
+    return new THREE.Vector3(M[0] * xv + M[4] * yv + M[8] * zv + M[12], M[1] * xv + M[5] * yv + M[9] * zv + M[13], M[2] * xv + M[6] * yv + M[10] * zv + M[14]);
+  };
+  const c = at(0.5, 0.5), l = at(0.47, 0.5), r = at(0.53, 0.5), u = at(0.5, 0.47), dn = at(0.5, 0.53);
+  if (!c) return null;
+  let n = new THREE.Vector3(0, 1, 0);
+  if (l && r && u && dn) {
+    n = new THREE.Vector3().crossVectors(r.clone().sub(l), dn.clone().sub(u)).normalize();
+    if (n.dot(new THREE.Vector3(M[12], M[13], M[14]).sub(c)) < 0) n.negate();
+  }
+  const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 1, 0), n);
+  const m = new THREE.Matrix4().compose(c, q, new THREE.Vector3(1, 1, 1));
+  return { transform: { matrix: m.elements } };
+}
 
 const inv = new THREE.Matrix4();
 function toLocal(x, y, z) {
@@ -207,8 +240,8 @@ function updateInv() { box.group.updateMatrixWorld(true); inv.copy(box.group.mat
 function stepText() {
   const cov = Math.round(100 * coverage.reduce((s, c) => s + (c >= 12 ? 1 : 0), 0) / SEG);
   switch (step) {
-    case 'table': return ['1 · Tap the table', 'Aim at the table right next to the object'];
-    case 'object': return ['2 · Tap the object', 'Aim at the middle of the object'];
+    case 'table': return ['1 · Tap the table', !isQuest && !phoneAimOk ? 'Move the phone slowly so it can see the table…' : 'Aim the circle at the table next to the object, then tap'];
+    case 'object': return ['2 · Tap the object', !isQuest && !phoneAimOk ? 'Move the phone slowly…' : 'Aim the circle at the middle of the object, then tap'];
     case 'adjust': return ['3 · Fit the box', 'Make the box just fit around the object'];
     case 'scan': return [paused ? 'Paused' : `Scanning · ${cov}% covered`, cov < 90 ? 'Walk slowly around it — look from above too' : 'Great coverage. Press Finish'];
     case 'build': return ['Building model…', 'This takes a few seconds'];
@@ -487,13 +520,13 @@ function scanQuest(frame, viewer) {
 
 let phoneFrame = 0;
 function scanPhone(frame, viewer) {
-  if (++phoneFrame % 2) return;
+  if (++phoneFrame % 3) return;          // every 3rd camera frame
   const view = viewer.views[0];
   let di = null;
   try { di = frame.getDepthInformation(view); } catch { di = null; }
   if (!di) return;
   const P = view.projectionMatrix, M = view.transform.matrix;
-  const GW = 40, GH = 30, pts = new Array(GW * GH);
+  const GW = 32, GH = 24, pts = new Array(GW * GH), t0 = performance.now();
   for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) {
     const u = (i + 0.5) / GW, v = (j + 0.5) / GH;
     let d = 0;
@@ -515,6 +548,7 @@ function scanPhone(frame, viewer) {
     let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
     const ln = Math.hypot(nx, ny, nz) || 1;
     if (addSample(p, [nx / ln, ny / ln, nz / ln], cam)) n++;
+    if (performance.now() - t0 > 14) break;   // keep the camera smooth on slower phones
   }
   noteCoverage(cam, n);
 }
@@ -547,6 +581,14 @@ function onEnd() {
 // ---------------- frame loop ----------------
 function onFrame(t, frame) {
   if (!session) return;
+  try { frameBody(t, frame); }
+  catch (e) {
+    console.error(e);
+    if (!isQuest) $('ovHint').textContent = 'Error: ' + (e && e.message || e);
+    try { renderer.render(scene, camera); } catch {}
+  }
+}
+function frameBody(t, frame) {
   lastFrame = frame;
   const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0;
   lastT = t;
@@ -566,14 +608,18 @@ function onFrame(t, frame) {
         const r = frame.getHitTestResults(hitSources.get(pendingTap));
         if (r.length) placeAt(r[0].getPose(refSpace));
       }
-    } else if (centerHit) {
-      const r = frame.getHitTestResults(centerHit);
-      if (r.length) aimPose = r[0].getPose(refSpace);
-      if (pendingTap === 'center' && aimPose) placeAt(aimPose);
+    } else {
+      if (centerHit) { const r = frame.getHitTestResults(centerHit); if (r.length) aimPose = r[0].getPose(refSpace); }
+      if (!aimPose) aimPose = aimFromDepth(frame, viewer);
+      phoneAimOk = !!aimPose;
+      if (pendingTap === 'center') {
+        if (aimPose) { placeAt(aimPose); pendingTap = null; }
+        else if (++tapWait > 90) { pendingTap = null; tapWait = 0; }
+      }
     }
     if (aimPose) { reticle.matrix.fromArray(aimPose.transform.matrix); reticle.visible = true; }
   }
-  pendingTap = null;
+  if (isQuest || pendingTap !== 'center') { pendingTap = null; tapWait = 0; }
 
   if (step === 'scan' && !paused && vol) {
     if (isQuest) scanQuest(frame, viewer); else scanPhone(frame, viewer);

@@ -1,5 +1,5 @@
 // Sculpt Scan offline support
-const VERSION = 'sculpt-scan-v1';
+const VERSION = 'sculpt-scan-v2';
 const APP = ['./', './index.html', './scan-core.js', './manifest.webmanifest', './icons/icon-192.png', './icons/icon-512.png'];
 const CDN = 'https://cdn.jsdelivr.net/npm/three@0.170.0/';
 
