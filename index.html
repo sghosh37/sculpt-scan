@@ -199,6 +199,7 @@ let fanSources = [];          // Quest: depth-ray fan for scanning
 let pendingTap = null;        // input source that asked to place something
 let lastBuilt = null;
 let tapFailed = false, tapWait = 0;
+let lastPose = null, scanWarn = 'ok', recentred = false;
 
 // phone: a point straight ahead from the depth map (works before ARCore has found any planes)
 function aimFromDepth(frame, viewer) {
@@ -245,7 +246,11 @@ function stepText() {
     case 'object': return ['2 · Tap the object', tapFailed ? 'Couldn’t measure there — move a little and tap again'
       : isQuest ? 'Aim at the middle of the object' : 'Put the circle on the middle of the object, then tap'];
     case 'adjust': return ['3 · Fit the box', 'Make the box just fit around the object'];
-    case 'scan': return [paused ? 'Paused' : `Scanning · ${cov}% covered`, cov < 90 ? 'Walk slowly around it — look from above too' : 'Great coverage. Press Finish'];
+    case 'scan':
+      if (recentred) return ['Paused — view was recentred', 'The box may no longer line up. Press Finish to keep what you have, or Cancel and start again'];
+      if (scanWarn === 'lost') return [`Tracking lost · ${cov}%`, 'Keep the room well lit and move slowly — scanning resumes automatically'];
+      if (scanWarn === 'fast') return [`Slow down · ${cov}%`, 'Moving too fast to measure — walk and turn slowly'];
+      return [paused ? 'Paused' : `Scanning · ${cov}% covered`, cov < 90 ? 'Walk slowly around it — look from above too' : 'Great coverage. Press Finish'];
     case 'build': return ['Building model…', 'This takes a few seconds'];
   }
   return ['', ''];
@@ -268,7 +273,7 @@ function buttonsFor() {
     case 'table': case 'object': return [['Cancel', 'cancel', 'quiet']].concat(isPhone ? [['Tap here', 'tap', 'primary']] : []);
     case 'adjust': return [['Size −', ['size', -0.02]], ['Size +', ['size', 0.02]], ['Height −', ['height', -0.02]], ['Height +', ['height', 0.02]],
       ['Base ↓', ['base', -0.005]], ['Base ↑', ['base', 0.005]], ['Redo', 'retap', 'quiet'], ['Start scan', 'start', 'done']];
-    case 'scan': return [[paused ? 'Resume' : 'Pause', 'pause', 'quiet'], ['Cancel', 'cancel', 'quiet'], ['Finish', 'finish', 'done']];
+    case 'scan': return (recentred ? [] : [[paused ? 'Resume' : 'Pause', 'pause', 'quiet']]).concat([['Cancel', 'cancel', 'quiet'], ['Finish', 'finish', 'done']]);
     default: return [];
   }
 }
@@ -292,7 +297,7 @@ function refreshPhoneUI(force) {
   $('crosshair').style.display = step === 'table' || step === 'object' || step === 'adjust' ? 'block' : 'none';
   $('ovProgress').style.display = step === 'scan' ? 'block' : 'none';
   $('ovProgress').firstElementChild.style.width = Math.round(coveragePct() * 100) + '%';
-  const key = step + paused;
+  const key = step + paused + recentred;
   if (key === ovKey && !force) return;
   ovKey = key;
   const wrap = $('ovButtons');
@@ -331,7 +336,8 @@ function rr(x, y, w, h, r) { pctx.beginPath(); pctx.moveTo(x + r, y); pctx.arcTo
 function drawPanel(force) {
   const [title, hint] = stepText();
   const hov = new Set([...hover.values()].filter(Boolean));
-  const key = [step, paused, title, hint, [...hov].map((b) => b.label).join()].join('|');
+  if (force !== true && pbtns.length !== buttonsFor().length) layoutPanel();
+  const key = [step, paused, recentred, title, hint, [...hov].map((b) => b.label).join()].join('|');
   if (key === pkey && !force) return;
   pkey = key;
   pctx.clearRect(0, 0, PW, PH);
@@ -408,6 +414,7 @@ async function startSession() {
   await renderer.xr.setSession(session);
   refSpace = renderer.xr.getReferenceSpace();
   viewerSpace = await session.requestReferenceSpace('viewer');
+  refSpace.addEventListener('reset', () => { if (step === 'scan') { paused = true; recentred = true; refreshUI(true); } });
   session.addEventListener('end', onEnd);
   session.addEventListener('select', onSelect);
   session.addEventListener('inputsourceschange', onInputs);
@@ -471,7 +478,7 @@ async function startScan() {
   coverage.fill(0); prevN = 0; prevHead = 0;
   ring.visible = true;
   boxEdges.material.color.set(0x45d483); boxBase.material.color.set(0x45d483); boxBase.material.opacity = 0.08;
-  step = 'scan'; paused = false;
+  step = 'scan'; paused = false; recentred = false; lastPose = null;
   if (isQuest) {
     // a fan of depth rays from the head: 12 x 12 over about ±16°
     for (const h of fanSources) h.cancel();
@@ -626,7 +633,20 @@ function frameBody(t, frame) {
   }
   if (isQuest || pendingTap !== 'center') { pendingTap = null; tapWait = 0; }
 
-  if (step === 'scan' && !paused && vol) {
+  // movement guard: skip frames where the device moves too fast (depth lags behind the pose
+  // and smears the shape) or tracking is lost
+  const vp = viewer.transform.position, vo = viewer.transform.orientation;
+  const qNow = new THREE.Quaternion(vo.x, vo.y, vo.z, vo.w), pNow = new THREE.Vector3(vp.x, vp.y, vp.z);
+  let moveState = 'ok';
+  if (viewer.emulatedPosition) moveState = 'lost';
+  else if (lastPose && dt > 0) {
+    const turn = lastPose.q.angleTo(qNow) / dt, speed = lastPose.p.distanceTo(pNow) / dt;   // rad/s, m/s
+    if (turn > 1.2 || speed > 0.7) moveState = 'fast';
+  }
+  lastPose = { q: qNow, p: pNow };
+  scanWarn = step === 'scan' && !paused ? moveState : 'ok';
+
+  if (step === 'scan' && !paused && vol && moveState === 'ok') {
     if (isQuest) scanQuest(frame, viewer); else scanPhone(frame, viewer);
     prevGeo.attributes.position.needsUpdate = true;
     prevGeo.setDrawRange(0, prevN);
