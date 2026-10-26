@@ -198,7 +198,7 @@ let centerHit = null;         // phone: viewer-space hit test
 let fanSources = [];          // Quest: depth-ray fan for scanning
 let pendingTap = null;        // input source that asked to place something
 let lastBuilt = null;
-let phoneAimOk = false, tapWait = 0;
+let tapFailed = false, tapWait = 0;
 
 // phone: a point straight ahead from the depth map (works before ARCore has found any planes)
 function aimFromDepth(frame, viewer) {
@@ -240,8 +240,10 @@ function updateInv() { box.group.updateMatrixWorld(true); inv.copy(box.group.mat
 function stepText() {
   const cov = Math.round(100 * coverage.reduce((s, c) => s + (c >= 12 ? 1 : 0), 0) / SEG);
   switch (step) {
-    case 'table': return ['1 · Tap the table', !isQuest && !phoneAimOk ? 'Move the phone slowly so it can see the table…' : 'Aim the circle at the table next to the object, then tap'];
-    case 'object': return ['2 · Tap the object', !isQuest && !phoneAimOk ? 'Move the phone slowly…' : 'Aim the circle at the middle of the object, then tap'];
+    case 'table': return ['1 · Tap the table', tapFailed ? 'Couldn’t measure there — move the phone a little closer and tap again'
+      : isQuest ? 'Aim at the table right next to the object' : 'Put the circle on the table next to the object, then tap'];
+    case 'object': return ['2 · Tap the object', tapFailed ? 'Couldn’t measure there — move a little and tap again'
+      : isQuest ? 'Aim at the middle of the object' : 'Put the circle on the middle of the object, then tap'];
     case 'adjust': return ['3 · Fit the box', 'Make the box just fit around the object'];
     case 'scan': return [paused ? 'Paused' : `Scanning · ${cov}% covered`, cov < 90 ? 'Walk slowly around it — look from above too' : 'Great coverage. Press Finish'];
     case 'build': return ['Building model…', 'This takes a few seconds'];
@@ -271,15 +273,20 @@ function buttonsFor() {
   }
 }
 function runAction(a) {
-  if (a === 'tap') { pendingTap = 'center'; return; }
+  if (a === 'tap') { pendingTap = 'center'; tapFailed = false; return; }
   if (Array.isArray(a)) ACTIONS[a[0]](a[1]); else ACTIONS[a]();
   refreshUI(true);
 }
 
 // ---------------- phone overlay UI ----------------
 let ovKey = '';
+let ovText = '';
 function refreshPhoneUI(force) {
-  const [title, hint] = stepText();
+  let [title, hint] = stepText();
+  if (pendingTap === 'center') hint = 'Measuring…';
+  const txt = title + '|' + hint + '|' + step + '|' + Math.round(coveragePct() * 100);
+  if (txt === ovText && !force) return;
+  ovText = txt;
   $('ovTitle').textContent = title;
   $('ovHint').textContent = hint;
   $('crosshair').style.display = step === 'table' || step === 'object' || step === 'adjust' ? 'block' : 'none';
@@ -435,7 +442,7 @@ function onSelect(e) {
     if (overPanel.get(src)) return;     // clicked the panel background
     pendingTap = src;
   } else {
-    pendingTap = 'center';              // phone: tap anywhere = use the crosshair
+    if (step === 'table' || step === 'object' || step === 'adjust') { pendingTap = 'center'; tapFailed = false; }   // phone: tap anywhere = use the circle
   }
 }
 
@@ -608,16 +615,14 @@ function frameBody(t, frame) {
         const r = frame.getHitTestResults(hitSources.get(pendingTap));
         if (r.length) placeAt(r[0].getPose(refSpace));
       }
-    } else {
+    } else if (pendingTap === 'center') {
+      // phone: nothing is measured until you tap; then only the spot under the circle
       if (centerHit) { const r = frame.getHitTestResults(centerHit); if (r.length) aimPose = r[0].getPose(refSpace); }
       if (!aimPose) aimPose = aimFromDepth(frame, viewer);
-      phoneAimOk = !!aimPose;
-      if (pendingTap === 'center') {
-        if (aimPose) { placeAt(aimPose); pendingTap = null; }
-        else if (++tapWait > 90) { pendingTap = null; tapWait = 0; }
-      }
+      if (aimPose) { tapFailed = false; placeAt(aimPose); pendingTap = null; tapWait = 0; }
+      else if (++tapWait > 45) { tapFailed = true; pendingTap = null; tapWait = 0; }   // ~1.5 s
     }
-    if (aimPose) { reticle.matrix.fromArray(aimPose.transform.matrix); reticle.visible = true; }
+    if (aimPose && isQuest) { reticle.matrix.fromArray(aimPose.transform.matrix); reticle.visible = true; }
   }
   if (isQuest || pendingTap !== 'center') { pendingTap = null; tapWait = 0; }
 
