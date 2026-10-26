@@ -1,0 +1,701 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Sculpt Scan</title>
+<link rel="manifest" href="manifest.webmanifest">
+<meta name="theme-color" content="#111418">
+<link rel="icon" href="icons/icon-192.png">
+<link rel="apple-touch-icon" href="icons/icon-192.png">
+<style>
+  :root { --bg:#111418; --card:#1b2027; --fg:#eef1f4; --muted:#98a2ad; --accent:#ff9d3b; --ok:#45d483; --line:#2a313a; }
+  * { box-sizing:border-box; }
+  html, body { margin:0; background:var(--bg); color:var(--fg); font-family:system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  main { max-width:640px; margin:0 auto; padding:28px 16px 48px; }
+  h1 { margin:0 0 6px; font-size:30px; letter-spacing:-0.5px; }
+  .sub { color:var(--muted); margin:0 0 22px; line-height:1.45; }
+  .btn { display:block; width:100%; padding:16px; font-size:19px; font-weight:700; border:0; border-radius:12px; background:var(--accent); color:#241200; cursor:pointer; }
+  .btn:disabled { background:#2a2f36; color:#6b747e; cursor:not-allowed; }
+  .btn.ghost { background:transparent; color:var(--fg); border:1px solid var(--line); font-weight:600; }
+  .note { color:var(--muted); font-size:15px; line-height:1.5; margin:14px 0 0; }
+  .warn { color:#ffcf7a; }
+  details { margin-top:22px; background:var(--card); border-radius:12px; padding:12px 16px; }
+  summary { cursor:pointer; font-weight:600; }
+  details li { color:var(--muted); line-height:1.55; margin:4px 0; }
+  #review { display:none; }
+  #viewer { width:100%; height:min(62vh, 520px); border-radius:14px; overflow:hidden; background:#0b0d10; touch-action:none; }
+  .stats { color:var(--muted); font-size:15px; margin:10px 2px 14px; }
+  .row { display:flex; align-items:center; justify-content:space-between; gap:12px; padding:12px 2px; border-top:1px solid var(--line); }
+  .row label { font-weight:600; }
+  .row input[type=range] { flex:1; max-width:60%; }
+  .row select { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:8px; padding:8px 10px; font-size:16px; }
+  .actions { display:grid; grid-template-columns:2fr 1fr; gap:10px; margin-top:16px; }
+  /* phone AR overlay */
+  #overlay { display:none; position:fixed; inset:0; pointer-events:none; font-family:system-ui, sans-serif; }
+  #overlay .top { position:absolute; top:0; left:0; right:0; padding:calc(env(safe-area-inset-top) + 12px) 16px 12px; background:linear-gradient(#000a, #0000); text-align:center; }
+  #ovTitle { font-size:18px; font-weight:700; color:#fff; }
+  #ovHint { font-size:14px; color:#dfe5ea; margin-top:4px; }
+  #crosshair { position:absolute; left:50%; top:50%; width:34px; height:34px; margin:-17px 0 0 -17px; border:2px solid #fff; border-radius:50%; box-shadow:0 0 0 1px #0006; }
+  #crosshair::after { content:""; position:absolute; left:50%; top:50%; width:4px; height:4px; margin:-2px 0 0 -2px; background:#fff; border-radius:50%; }
+  #overlay .bottom { position:absolute; left:0; right:0; bottom:0; padding:12px 12px calc(env(safe-area-inset-bottom) + 14px); display:flex; flex-wrap:wrap; gap:8px; justify-content:center; background:linear-gradient(#0000, #000b); pointer-events:auto; }
+  #overlay .bottom button { pointer-events:auto; min-width:64px; padding:13px 14px; font-size:16px; font-weight:700; border:0; border-radius:12px; background:#ffffffe6; color:#111; }
+  #overlay .bottom button.primary { background:var(--accent); color:#241200; }
+  #overlay .bottom button.done { background:var(--ok); color:#06210f; }
+  #overlay .bottom button.quiet { background:#0009; color:#fff; border:1px solid #fff5; }
+  #ovProgress { position:absolute; left:16px; right:16px; top:calc(env(safe-area-inset-top) + 78px); height:6px; background:#ffffff33; border-radius:3px; display:none; }
+  #ovProgress i { display:block; height:100%; width:0; background:var(--ok); border-radius:3px; }
+</style>
+<script type="importmap">
+{ "imports": {
+  "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js",
+  "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"
+} }
+</script>
+</head>
+<body>
+<main id="home">
+  <h1>Sculpt Scan</h1>
+  <p class="sub">Scan a real object and download it as a 3D model (OBJ) for sculpting, carving or 3D printing.</p>
+  <button class="btn" id="startBtn" disabled>Start scan</button>
+  <p class="note" id="support">Checking this device…</p>
+  <details>
+    <summary>How to get a good scan</summary>
+    <ul>
+      <li>Put the object on a table with some space around it. Plain, matte objects scan best; shiny, glass or very dark ones scan poorly.</li>
+      <li><b>Tap the table</b> next to the object, then <b>tap the object</b>. Shrink the box so it just fits.</li>
+      <li>Walk slowly all the way around, about an arm's length away, and look at it from above too. The ring fills in as each side is covered.</li>
+      <li>Hidden parts (like the underside) are filled in solid, so the model is closed and ready for sculpting or printing.</li>
+    </ul>
+  </details>
+</main>
+
+<main id="review">
+  <h1>Your scan</h1>
+  <div id="viewer"></div>
+  <div class="stats" id="stats"></div>
+  <div class="row"><label for="smooth">Smoothness</label><input type="range" id="smooth" min="0" max="12" step="1" value="4"></div>
+  <div class="row"><label for="fill">Fill hidden parts (closed solid)</label><input type="checkbox" id="fill" checked></div>
+  <div class="row"><label for="units">Units</label>
+    <select id="units"><option value="mm" selected>Millimetres</option><option value="cm">Centimetres</option><option value="m">Metres</option></select></div>
+  <div class="actions">
+    <button class="btn" id="download">Download OBJ</button>
+    <button class="btn ghost" id="again">Scan again</button>
+  </div>
+  <p class="note">Scans from a headset or phone capture the overall form (roughly 5–10 mm detail), not fine texture.</p>
+</main>
+
+<div id="overlay">
+  <div class="top"><div id="ovTitle"></div><div id="ovHint"></div></div>
+  <div id="ovProgress"><i></i></div>
+  <div id="crosshair"></div>
+  <div class="bottom" id="ovButtons"></div>
+</div>
+
+<script type="module">
+import * as THREE from 'three';
+import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { Volume, buildMesh, toOBJ, bounds } from './scan-core.js';
+
+const $ = (id) => document.getElementById(id);
+const UA = navigator.userAgent;
+const isQuest = /OculusBrowser|Quest/i.test(UA);
+const isIOS = /iPhone|iPad|iPod/i.test(UA) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+const isPhone = !isQuest && /Android|Mobi/i.test(UA);
+
+// ---------------- support check ----------------
+(async () => {
+  let ok = false;
+  try { ok = !!navigator.xr && await navigator.xr.isSessionSupported('immersive-ar'); } catch {}
+  if (ok) {
+    $('startBtn').disabled = false;
+    $('support').textContent = isQuest ? 'Meta Quest detected — scanning uses the headset’s depth sensor.'
+      : 'Phone detected — scanning uses your camera’s depth (ARCore). Needs a phone that supports ARCore Depth.';
+  } else if (isIOS) {
+    $('support').innerHTML = '<span class="warn">iPhone and iPad browsers don’t support web AR yet, so scanning can’t run here.</span> Open this link on a Meta Quest 3/3S or an Android phone with Chrome.';
+  } else {
+    $('support').innerHTML = '<span class="warn">AR isn’t available in this browser.</span> Open this link on a Meta Quest 3/3S (Quest Browser) or an Android phone (Chrome).';
+  }
+})();
+if ('serviceWorker' in navigator && location.protocol !== 'file:') navigator.serviceWorker.register('sw.js').catch(() => {});
+
+// ---------------- AR scene ----------------
+const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+renderer.setPixelRatio(window.devicePixelRatio);
+renderer.setClearColor(0x000000, 0);
+renderer.xr.enabled = true;
+const scene = new THREE.Scene();
+const camera = new THREE.PerspectiveCamera(70, 1, 0.01, 20);
+
+const reticle = new THREE.Mesh(new THREE.RingGeometry(0.012, 0.02, 32).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0xffffff, depthTest: false }));
+reticle.matrixAutoUpdate = false; reticle.visible = false; reticle.renderOrder = 5;
+scene.add(reticle);
+const tableMark = new THREE.Mesh(new THREE.RingGeometry(0.008, 0.016, 24).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0xff9d3b, depthTest: false }));
+tableMark.visible = false; tableMark.renderOrder = 5;
+scene.add(tableMark);
+
+// selection box: group origin = centre of the base, y up
+const box = { group: new THREE.Group(), w: 0.25, h: 0.3, d: 0.25, placed: false };
+const boxEdges = new THREE.LineSegments(new THREE.EdgesGeometry(new THREE.BoxGeometry(1, 1, 1).translate(0, 0.5, 0)),
+  new THREE.LineBasicMaterial({ color: 0xff9d3b, depthTest: false }));
+boxEdges.renderOrder = 4;
+const boxBase = new THREE.Mesh(new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2),
+  new THREE.MeshBasicMaterial({ color: 0xff9d3b, transparent: true, opacity: 0.18, depthWrite: false, side: THREE.DoubleSide }));
+box.group.add(boxEdges, boxBase);
+box.group.visible = false;
+scene.add(box.group);
+function applyBox() {
+  boxEdges.scale.set(box.w, box.h, box.d);
+  boxBase.scale.set(box.w, 1, box.d);
+  ring.scale.setScalar(Math.max(box.w, box.d) * 0.5 + 0.05);
+}
+
+// coverage ring around the base (24 sides)
+const SEG = 24;
+const ring = new THREE.Group();
+const ringSegs = [];
+for (let s = 0; s < SEG; s++) {
+  const a0 = (s / SEG) * Math.PI * 2 + 0.02, a1 = ((s + 1) / SEG) * Math.PI * 2 - 0.02, pts = [];
+  for (let k = 0; k <= 6; k++) { const a = a0 + (a1 - a0) * k / 6; pts.push(new THREE.Vector3(Math.cos(a), 0.002, Math.sin(a))); }
+  const l = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), new THREE.LineBasicMaterial({ color: 0x666666, depthTest: false }));
+  l.renderOrder = 4; ring.add(l); ringSegs.push(l);
+}
+ring.visible = false;
+box.group.add(ring);
+
+// live point preview (latest points)
+const PREV = 30000;
+const prevBuf = new Float32Array(PREV * 3);
+const prevGeo = new THREE.BufferGeometry();
+prevGeo.setAttribute('position', new THREE.BufferAttribute(prevBuf, 3));
+prevGeo.setDrawRange(0, 0);
+const prevPts = new THREE.Points(prevGeo, new THREE.PointsMaterial({ color: 0x45d483, size: 0.004 }));
+prevPts.frustumCulled = false;
+box.group.add(prevPts);
+let prevN = 0, prevHead = 0;
+function previewPoint(p) {
+  prevBuf[prevHead * 3] = p[0]; prevBuf[prevHead * 3 + 1] = p[1]; prevBuf[prevHead * 3 + 2] = p[2];
+  prevHead = (prevHead + 1) % PREV; prevN = Math.min(PREV, prevN + 1);
+}
+
+// ---------------- state ----------------
+let session = null, refSpace = null, viewerSpace = null;
+let step = 'table';          // table -> object -> adjust -> scan -> build
+let tableY = null;
+let vol = null, paused = false;
+let coverage = new Uint16Array(SEG);
+let lastFrame = null, lastT = 0;
+const hitSources = new Map(); // inputSource -> XRHitTestSource (Quest controllers)
+let centerHit = null;         // phone: viewer-space hit test
+let fanSources = [];          // Quest: depth-ray fan for scanning
+let pendingTap = null;        // input source that asked to place something
+let lastBuilt = null;
+
+const inv = new THREE.Matrix4();
+function toLocal(x, y, z) {
+  const v = new THREE.Vector3(x, y, z).applyMatrix4(inv);
+  return [v.x, v.y, v.z];
+}
+function dirToLocal(x, y, z) {
+  const v = new THREE.Vector3(x, y, z).transformDirection(inv);
+  return [v.x, v.y, v.z];
+}
+function updateInv() { box.group.updateMatrixWorld(true); inv.copy(box.group.matrixWorld).invert(); }
+
+function stepText() {
+  const cov = Math.round(100 * coverage.reduce((s, c) => s + (c >= 12 ? 1 : 0), 0) / SEG);
+  switch (step) {
+    case 'table': return ['1 · Tap the table', 'Aim at the table right next to the object'];
+    case 'object': return ['2 · Tap the object', 'Aim at the middle of the object'];
+    case 'adjust': return ['3 · Fit the box', 'Make the box just fit around the object'];
+    case 'scan': return [paused ? 'Paused' : `Scanning · ${cov}% covered`, cov < 90 ? 'Walk slowly around it — look from above too' : 'Great coverage. Press Finish'];
+    case 'build': return ['Building model…', 'This takes a few seconds'];
+  }
+  return ['', ''];
+}
+function coveragePct() { return coverage.reduce((s, c) => s + (c >= 12 ? 1 : 0), 0) / SEG; }
+
+// ---------------- actions (shared by phone buttons and headset panel) ----------------
+const ACTIONS = {
+  cancel: () => session && session.end(),
+  size: (d) => { box.w = box.d = Math.min(1.2, Math.max(0.06, box.w + d)); applyBox(); },
+  height: (d) => { box.h = Math.min(1.5, Math.max(0.05, box.h + d)); applyBox(); },
+  base: (d) => { box.group.position.y += d; },
+  start: () => startScan(),
+  pause: () => { paused = !paused; },
+  finish: () => finishScan(),
+  retap: () => { step = 'table'; box.group.visible = false; tableMark.visible = false; box.placed = false; },
+};
+function buttonsFor() {
+  switch (step) {
+    case 'table': case 'object': return [['Cancel', 'cancel', 'quiet']].concat(isPhone ? [['Tap here', 'tap', 'primary']] : []);
+    case 'adjust': return [['Size −', ['size', -0.02]], ['Size +', ['size', 0.02]], ['Height −', ['height', -0.02]], ['Height +', ['height', 0.02]],
+      ['Base ↓', ['base', -0.005]], ['Base ↑', ['base', 0.005]], ['Redo', 'retap', 'quiet'], ['Start scan', 'start', 'done']];
+    case 'scan': return [[paused ? 'Resume' : 'Pause', 'pause', 'quiet'], ['Cancel', 'cancel', 'quiet'], ['Finish', 'finish', 'done']];
+    default: return [];
+  }
+}
+function runAction(a) {
+  if (a === 'tap') { pendingTap = 'center'; return; }
+  if (Array.isArray(a)) ACTIONS[a[0]](a[1]); else ACTIONS[a]();
+  refreshUI(true);
+}
+
+// ---------------- phone overlay UI ----------------
+let ovKey = '';
+function refreshPhoneUI(force) {
+  const [title, hint] = stepText();
+  $('ovTitle').textContent = title;
+  $('ovHint').textContent = hint;
+  $('crosshair').style.display = step === 'table' || step === 'object' || step === 'adjust' ? 'block' : 'none';
+  $('ovProgress').style.display = step === 'scan' ? 'block' : 'none';
+  $('ovProgress').firstElementChild.style.width = Math.round(coveragePct() * 100) + '%';
+  const key = step + paused;
+  if (key === ovKey && !force) return;
+  ovKey = key;
+  const wrap = $('ovButtons');
+  wrap.innerHTML = '';
+  for (const [label, act, cls] of buttonsFor()) {
+    const b = document.createElement('button');
+    b.textContent = label;
+    if (cls) b.className = cls;
+    b.addEventListener('click', (e) => { e.stopPropagation(); runAction(act); });
+    wrap.appendChild(b);
+  }
+}
+// taps on overlay buttons must not also count as AR taps
+$('overlay').addEventListener('beforexrselect', (e) => { if (e.target.closest('button')) e.preventDefault(); });
+
+// ---------------- headset panel UI (canvas) ----------------
+const PW = 768, PH = 420;
+const pcanvas = document.createElement('canvas'); pcanvas.width = PW; pcanvas.height = PH;
+const pctx = pcanvas.getContext('2d');
+const ptex = new THREE.CanvasTexture(pcanvas); ptex.colorSpace = THREE.SRGBColorSpace;
+const panel = new THREE.Mesh(new THREE.PlaneGeometry(0.4, 0.4 * PH / PW),
+  new THREE.MeshBasicMaterial({ map: ptex, transparent: true, depthTest: false, depthWrite: false }));
+panel.renderOrder = 10; panel.visible = false;
+scene.add(panel);
+let pbtns = [], hover = new Map(), overPanel = new Map(), pkey = '';
+function layoutPanel() {
+  const list = buttonsFor();
+  pbtns = [];
+  const cols = list.length > 4 ? 4 : list.length, bw = (PW - 40 - (cols - 1) * 10) / cols, bh = 80;
+  list.forEach(([label, act, cls], i) => {
+    const r = Math.floor(i / cols), c = i % cols, rows = Math.ceil(list.length / cols);
+    pbtns.push({ label, act, cls, x: 20 + c * (bw + 10), y: PH - 20 - (rows - r) * (bh + 10) + 10, w: bw, h: bh });
+  });
+}
+function rr(x, y, w, h, r) { pctx.beginPath(); pctx.moveTo(x + r, y); pctx.arcTo(x + w, y, x + w, y + h, r); pctx.arcTo(x + w, y + h, x, y + h, r); pctx.arcTo(x, y + h, x, y, r); pctx.arcTo(x, y, x + w, y, r); pctx.closePath(); }
+function drawPanel(force) {
+  const [title, hint] = stepText();
+  const hov = new Set([...hover.values()].filter(Boolean));
+  const key = [step, paused, title, hint, [...hov].map((b) => b.label).join()].join('|');
+  if (key === pkey && !force) return;
+  pkey = key;
+  pctx.clearRect(0, 0, PW, PH);
+  pctx.fillStyle = 'rgba(17,20,24,0.9)'; rr(0, 0, PW, PH, 26); pctx.fill();
+  pctx.textBaseline = 'middle'; pctx.textAlign = 'left';
+  pctx.fillStyle = '#fff'; pctx.font = 'bold 40px system-ui, sans-serif'; pctx.fillText(title, 26, 48);
+  pctx.fillStyle = '#c3cbd3'; pctx.font = '28px system-ui, sans-serif'; pctx.fillText(hint, 26, 98);
+  if (step === 'scan') {
+    pctx.fillStyle = '#2a313a'; rr(26, 130, PW - 52, 16, 8); pctx.fill();
+    pctx.fillStyle = '#45d483'; rr(26, 130, (PW - 52) * coveragePct(), 16, 8); pctx.fill();
+    pctx.fillStyle = '#98a2ad'; pctx.font = '24px system-ui, sans-serif';
+    pctx.fillText((vol ? vol.points : 0).toLocaleString() + ' points', 26, 175);
+  }
+  pctx.textAlign = 'center';
+  for (const b of pbtns) {
+    const h = hov.has(b);
+    pctx.fillStyle = b.cls === 'done' ? (h ? '#5fe398' : '#45d483') : b.cls === 'primary' ? '#ff9d3b' : b.cls === 'quiet' ? (h ? '#3a434e' : '#262c34') : (h ? '#e8edf2' : '#d3dae1');
+    rr(b.x, b.y, b.w, b.h, 14); pctx.fill();
+    pctx.fillStyle = b.cls === 'quiet' ? '#fff' : '#111';
+    pctx.font = 'bold 28px system-ui, sans-serif';
+    pctx.fillText(b.label, b.x + b.w / 2, b.y + b.h / 2 + 1);
+  }
+  ptex.needsUpdate = true;
+}
+function refreshUI(force) {
+  if (!session) return;
+  if (isQuest) { if (force) layoutPanel(); drawPanel(force); } else refreshPhoneUI(force);
+}
+let panelInit = false;
+const headPos = new THREE.Vector3(), headFwd = new THREE.Vector3();
+function placePanel(viewer, dt) {
+  const p = viewer.transform.position, o = viewer.transform.orientation;
+  headPos.set(p.x, p.y, p.z);
+  const f = new THREE.Vector3(0, 0, -1).applyQuaternion(new THREE.Quaternion(o.x, o.y, o.z, o.w)); f.y = 0;
+  if (f.lengthSq() > 1e-4) headFwd.copy(f.normalize());
+  const want = headPos.clone().addScaledVector(headFwd, 0.55); want.y -= 0.18;
+  const to = panel.position.clone().sub(headPos); to.y = 0;
+  const off = to.lengthSq() > 1e-4 ? to.normalize().angleTo(headFwd) : 9;
+  if (!panelInit || off > 0.9 || panel.position.distanceTo(headPos) > 1.2) { panel.userData.target = want; }
+  if (!panelInit) { panel.position.copy(want); panelInit = true; }
+  if (panel.userData.target) panel.position.lerp(panel.userData.target, Math.min(1, dt * 4));
+  panel.lookAt(headPos);
+}
+const raycaster = new THREE.Raycaster();
+function panelButtonAt(src, frame) {
+  const pose = frame.getPose(src.targetRaySpace, refSpace);
+  if (!pose) return null;
+  const m = new THREE.Matrix4().fromArray(pose.transform.matrix);
+  raycaster.set(new THREE.Vector3().setFromMatrixPosition(m), new THREE.Vector3(0, 0, -1).transformDirection(m));
+  const h = raycaster.intersectObject(panel, false)[0];
+  if (!h) return null;
+  const px = h.uv.x * PW, py = (1 - h.uv.y) * PH;
+  return pbtns.find((b) => px >= b.x && px <= b.x + b.w && py >= b.y && py <= b.y + b.h) || { none: true };
+}
+
+// ---------------- session ----------------
+$('startBtn').addEventListener('click', startSession);
+async function startSession() {
+  if (session) return;
+  const init = isQuest
+    ? { requiredFeatures: ['hit-test', 'local-floor'] }
+    : { requiredFeatures: ['hit-test', 'depth-sensing'], optionalFeatures: ['dom-overlay', 'local-floor'],
+        domOverlay: { root: $('overlay') },
+        depthSensing: { usagePreference: ['cpu-optimized'], dataFormatPreference: ['luminance-alpha', 'float32'] } };
+  try {
+    session = await navigator.xr.requestSession('immersive-ar', init);
+  } catch (e) {
+    $('support').innerHTML = '<span class="warn">Could not start AR: ' + e.message + '</span>' +
+      (isPhone ? ' This phone may not support ARCore Depth.' : '');
+    session = null;
+    return;
+  }
+  renderer.xr.setReferenceSpaceType(session.enabledFeatures?.includes?.('local-floor') || isQuest ? 'local-floor' : 'local');
+  await renderer.xr.setSession(session);
+  refSpace = renderer.xr.getReferenceSpace();
+  viewerSpace = await session.requestReferenceSpace('viewer');
+  session.addEventListener('end', onEnd);
+  session.addEventListener('select', onSelect);
+  session.addEventListener('inputsourceschange', onInputs);
+  if (isQuest) onInputs({ added: [...session.inputSources], removed: [] });
+  else {
+    centerHit = await session.requestHitTestSource({ space: viewerSpace }).catch(() => null);
+    $('overlay').style.display = 'block';
+  }
+  step = 'table'; tableY = null; vol = null; paused = false; coverage.fill(0); prevN = 0; prevHead = 0;
+  box.placed = false; box.group.visible = false; tableMark.visible = false; ring.visible = false; prevGeo.setDrawRange(0, 0);
+  box.w = box.d = 0.25; box.h = 0.3; applyBox();
+  panel.visible = isQuest; panelInit = false;
+  lastT = 0;
+  renderer.setAnimationLoop(onFrame);
+  refreshUI(true);
+}
+
+function onInputs(e) {
+  for (const s of e.removed) { const h = hitSources.get(s); if (h) h.cancel(); hitSources.delete(s); hover.delete(s); }
+  for (const s of e.added) {
+    if (s.targetRayMode !== 'tracked-pointer') continue;
+    session.requestHitTestSource({ space: s.targetRaySpace }).then((h) => hitSources.set(s, h)).catch(() => {});
+  }
+}
+
+function onSelect(e) {
+  const src = e.inputSource;
+  if (isQuest) {
+    // (poses can only be read inside a frame, so use the hover state from the last frame)
+    const b = hover.get(src);
+    if (b) { runAction(b.act); return; }
+    if (overPanel.get(src)) return;     // clicked the panel background
+    pendingTap = src;
+  } else {
+    pendingTap = 'center';              // phone: tap anywhere = use the crosshair
+  }
+}
+
+function placeAt(pose) {
+  const m = pose.transform.matrix;
+  const p = new THREE.Vector3(m[12], m[13], m[14]);
+  if (step === 'table') {
+    tableY = p.y;
+    tableMark.position.copy(p); tableMark.visible = true;
+    step = 'object';
+  } else if (step === 'object' || step === 'adjust') {
+    box.group.position.set(p.x, (tableY ?? p.y) + 0.004, p.z);
+    // face the user
+    const yaw = Math.atan2(headPos.x - p.x, headPos.z - p.z);
+    box.group.rotation.set(0, yaw, 0);
+    box.group.visible = true; box.placed = true; tableMark.visible = false;
+    step = 'adjust';
+  }
+  refreshUI(true);
+}
+
+// ---------------- scanning ----------------
+async function startScan() {
+  updateInv();
+  vol = new Volume(box.w, box.h, box.d, 96);
+  coverage.fill(0); prevN = 0; prevHead = 0;
+  ring.visible = true;
+  boxEdges.material.color.set(0x45d483); boxBase.material.color.set(0x45d483); boxBase.material.opacity = 0.08;
+  step = 'scan'; paused = false;
+  if (isQuest) {
+    // a fan of depth rays from the head: 12 x 12 over about ±16°
+    for (const h of fanSources) h.cancel();
+    fanSources = [];
+    const N = 12, A = Math.tan(16 * Math.PI / 180);
+    const reqs = [];
+    for (let j = 0; j < N; j++) for (let i = 0; i < N; i++) {
+      const x = (-1 + 2 * (i + 0.5) / N) * A, y = (-1 + 2 * (j + 0.5) / N) * A, l = Math.hypot(x, y, 1);
+      reqs.push(session.requestHitTestSource({ space: viewerSpace, offsetRay: new XRRay({ x: 0, y: 0, z: 0, w: 1 }, { x: x / l, y: y / l, z: -1 / l, w: 0 }) })
+        .then((h) => fanSources.push(h)).catch(() => {}));
+    }
+    await Promise.all(reqs);
+  }
+  refreshUI(true);
+}
+
+function addSample(pw, nw, camW) {
+  const p = toLocal(...pw), n = dirToLocal(...nw), c = toLocal(...camW);
+  if (vol.addPoint(p, n, c)) { previewPoint(p); return true; }
+  return false;
+}
+function noteCoverage(camW, count) {
+  if (count < 15) return;
+  const c = toLocal(...camW);
+  const a = Math.atan2(c[2], c[0]);
+  const s = Math.floor(((a + Math.PI * 2) % (Math.PI * 2)) / (Math.PI * 2) * SEG) % SEG;
+  if (coverage[s] < 65535) coverage[s]++;
+}
+
+function scanQuest(frame, viewer) {
+  const cam = [viewer.transform.position.x, viewer.transform.position.y, viewer.transform.position.z];
+  let n = 0;
+  for (const h of fanSources) {
+    const r = frame.getHitTestResults(h);
+    if (!r.length) continue;
+    const pose = r[0].getPose(refSpace);
+    if (!pose) continue;
+    const m = pose.transform.matrix;
+    if (addSample([m[12], m[13], m[14]], [m[4], m[5], m[6]], cam)) n++;
+  }
+  // controller pointers also measure (point them at the object like a spray can)
+  for (const [s, h] of hitSources) {
+    if (overPanel.get(s)) continue;
+    const r = frame.getHitTestResults(h);
+    if (!r.length) continue;
+    const pose = r[0].getPose(refSpace), rp = frame.getPose(s.targetRaySpace, refSpace);
+    if (!pose || !rp) continue;
+    const m = pose.transform.matrix, o = rp.transform.position;
+    if (addSample([m[12], m[13], m[14]], [m[4], m[5], m[6]], [o.x, o.y, o.z])) n++;
+  }
+  noteCoverage(cam, fanSources.length ? n : n * 10);
+}
+
+let phoneFrame = 0;
+function scanPhone(frame, viewer) {
+  if (++phoneFrame % 2) return;
+  const view = viewer.views[0];
+  let di = null;
+  try { di = frame.getDepthInformation(view); } catch { di = null; }
+  if (!di) return;
+  const P = view.projectionMatrix, M = view.transform.matrix;
+  const GW = 40, GH = 30, pts = new Array(GW * GH);
+  for (let j = 0; j < GH; j++) for (let i = 0; i < GW; i++) {
+    const u = (i + 0.5) / GW, v = (j + 0.5) / GH;
+    let d = 0;
+    try { d = di.getDepthInMeters(u, v); } catch { d = 0; }
+    if (!(d > 0.1 && d < 3)) { pts[j * GW + i] = null; continue; }
+    // normalized view coords -> NDC -> view space (depth is distance along the view axis)
+    const xn = u * 2 - 1, yn = 1 - v * 2;
+    const xv = d * (xn + P[8]) / P[0], yv = d * (yn + P[9]) / P[5], zv = -d;
+    pts[j * GW + i] = [M[0] * xv + M[4] * yv + M[8] * zv + M[12], M[1] * xv + M[5] * yv + M[9] * zv + M[13], M[2] * xv + M[6] * yv + M[10] * zv + M[14]];
+  }
+  const cam = [M[12], M[13], M[14]];
+  let n = 0;
+  for (let j = 1; j < GH - 1; j++) for (let i = 1; i < GW - 1; i++) {
+    const p = pts[j * GW + i], l = pts[j * GW + i - 1], r = pts[j * GW + i + 1], u = pts[(j - 1) * GW + i], dn = pts[(j + 1) * GW + i];
+    if (!p || !l || !r || !u || !dn) continue;
+    const ax = r[0] - l[0], ay = r[1] - l[1], az = r[2] - l[2], bx = dn[0] - u[0], by = dn[1] - u[1], bz = dn[2] - u[2];
+    // skip depth edges (big jumps between neighbours)
+    if (Math.hypot(ax, ay, az) > 0.08 || Math.hypot(bx, by, bz) > 0.08) continue;
+    let nx = ay * bz - az * by, ny = az * bx - ax * bz, nz = ax * by - ay * bx;
+    const ln = Math.hypot(nx, ny, nz) || 1;
+    if (addSample(p, [nx / ln, ny / ln, nz / ln], cam)) n++;
+  }
+  noteCoverage(cam, n);
+}
+
+function finishScan() {
+  if (!vol || vol.points < 200) { step = 'scan'; refreshUI(true); return; }
+  step = 'build';
+  refreshUI(true);
+  // let the "Building" message render, then build and leave AR
+  setTimeout(() => {
+    try { lastBuilt = { vol, mesh: buildMesh(vol, readOptions()) }; } catch (e) { lastBuilt = null; console.error(e); }
+    session && session.end();
+  }, 120);
+}
+
+function onEnd() {
+  renderer.setAnimationLoop(null);
+  for (const h of hitSources.values()) try { h.cancel(); } catch {}
+  for (const h of fanSources) try { h.cancel(); } catch {}
+  hitSources.clear(); fanSources = []; hover.clear();
+  if (centerHit) try { centerHit.cancel(); } catch {}
+  centerHit = null;
+  session = null;
+  $('overlay').style.display = 'none';
+  panel.visible = false;
+  if (step === 'build' && lastBuilt && lastBuilt.mesh) showReview();
+  else if (step === 'build') { $('support').innerHTML = '<span class="warn">Not enough of the object was captured. Try again and walk all the way around it.</span>'; }
+}
+
+// ---------------- frame loop ----------------
+function onFrame(t, frame) {
+  if (!session) return;
+  lastFrame = frame;
+  const dt = lastT ? Math.min(0.1, (t - lastT) / 1000) : 0;
+  lastT = t;
+  const viewer = frame.getViewerPose(refSpace);
+  if (!viewer) { renderer.render(scene, camera); return; }
+  headPos.set(viewer.transform.position.x, viewer.transform.position.y, viewer.transform.position.z);
+
+  // aiming (table / object / re-centre)
+  reticle.visible = false;
+  let aimPose = null;
+  if (step === 'table' || step === 'object' || step === 'adjust') {
+    if (isQuest) {
+      let aim = null;
+      for (const s of hitSources.keys()) if (!aim || s.handedness === 'right') aim = s;
+      if (aim) { const r = frame.getHitTestResults(hitSources.get(aim)); if (r.length) aimPose = r[0].getPose(refSpace); }
+      if (pendingTap && pendingTap !== 'center' && hitSources.has(pendingTap)) {
+        const r = frame.getHitTestResults(hitSources.get(pendingTap));
+        if (r.length) placeAt(r[0].getPose(refSpace));
+      }
+    } else if (centerHit) {
+      const r = frame.getHitTestResults(centerHit);
+      if (r.length) aimPose = r[0].getPose(refSpace);
+      if (pendingTap === 'center' && aimPose) placeAt(aimPose);
+    }
+    if (aimPose) { reticle.matrix.fromArray(aimPose.transform.matrix); reticle.visible = true; }
+  }
+  pendingTap = null;
+
+  if (step === 'scan' && !paused && vol) {
+    if (isQuest) scanQuest(frame, viewer); else scanPhone(frame, viewer);
+    prevGeo.attributes.position.needsUpdate = true;
+    prevGeo.setDrawRange(0, prevN);
+    for (let s = 0; s < SEG; s++) ringSegs[s].material.color.set(coverage[s] >= 12 ? 0x45d483 : coverage[s] > 0 ? 0xc9a227 : 0x666666);
+  }
+
+  if (isQuest) {
+    placePanel(viewer, dt);
+    for (const s of session.inputSources) if (s.targetRayMode === 'tracked-pointer') {
+      const b = panelButtonAt(s, frame);
+      hover.set(s, b && !b.none ? b : null);
+      overPanel.set(s, !!b);
+    }
+    drawPanel(false);
+  } else refreshPhoneUI(false);
+
+  renderer.render(scene, camera);
+}
+
+// ---------------- review ----------------
+let vRenderer = null, vScene, vCam, vControls, vMesh = null;
+function readOptions() { return { fillHidden: $('fill').checked, smoothness: +$('smooth').value }; }
+function showReview() {
+  $('home').style.display = 'none';
+  $('review').style.display = 'block';
+  if (!vRenderer) {
+    vRenderer = new THREE.WebGLRenderer({ antialias: true });
+    vRenderer.setPixelRatio(window.devicePixelRatio);
+    $('viewer').appendChild(vRenderer.domElement);
+    vScene = new THREE.Scene();
+    vScene.background = new THREE.Color(0x0b0d10);
+    vScene.add(new THREE.HemisphereLight(0xffffff, 0x334455, 1.6));
+    const sun = new THREE.DirectionalLight(0xffffff, 1.6); sun.position.set(1, 2, 1.5); vScene.add(sun);
+    vCam = new THREE.PerspectiveCamera(40, 1, 0.001, 50);
+    vControls = new OrbitControls(vCam, vRenderer.domElement);
+    vControls.enableDamping = true;
+    window.addEventListener('resize', sizeViewer);
+    vRenderer.setAnimationLoop(() => { vControls.update(); vRenderer.render(vScene, vCam); });
+  }
+  sizeViewer();
+  showMesh(lastBuilt.mesh, true);
+}
+function sizeViewer() {
+  const el = $('viewer'), w = el.clientWidth, h = el.clientHeight;
+  vRenderer.setSize(w, h); vCam.aspect = w / h; vCam.updateProjectionMatrix();
+}
+function showMesh(m, frameIt) {
+  if (vMesh) { vScene.remove(vMesh); vMesh.geometry.dispose(); }
+  const g = new THREE.BufferGeometry();
+  g.setAttribute('position', new THREE.BufferAttribute(m.positions, 3));
+  g.setAttribute('normal', new THREE.BufferAttribute(m.normals, 3));
+  g.setIndex(new THREE.BufferAttribute(m.indices, 1));
+  vMesh = new THREE.Mesh(g, new THREE.MeshStandardMaterial({ color: 0xd9c9b4, roughness: 0.85, metalness: 0 }));
+  vScene.add(vMesh);
+  const b = bounds(m), size = Math.max(...b.size);
+  if (frameIt) {
+    vControls.target.set(0, b.size[1] / 2, 0);
+    vCam.position.set(size * 1.6, size * 1.2, size * 1.9);
+    vCam.near = size / 100; vCam.far = size * 50; vCam.updateProjectionMatrix();
+    const grid = vScene.getObjectByName('grid'); if (grid) vScene.remove(grid);
+    const gh = new THREE.GridHelper(size * 2, 10, 0x334050, 0x222a33); gh.name = 'grid'; vScene.add(gh);
+  }
+  updateStats();
+}
+function updateStats() {
+  const m = lastBuilt && lastBuilt.mesh;
+  if (!m) return;
+  const u = $('units').value, s = u === 'mm' ? 1000 : u === 'cm' ? 100 : 1, dec = u === 'm' ? 3 : u === 'cm' ? 1 : 0;
+  const b = bounds(m);
+  $('stats').textContent = `${(b.size[0] * s).toFixed(dec)} × ${(b.size[1] * s).toFixed(dec)} × ${(b.size[2] * s).toFixed(dec)} ${u} (W × H × D) · ${(m.indices.length / 3).toLocaleString()} triangles`;
+}
+let rebuildTimer = 0;
+function rebuild() {
+  clearTimeout(rebuildTimer);
+  rebuildTimer = setTimeout(() => {
+    if (!lastBuilt) return;
+    const m = buildMesh(lastBuilt.vol, readOptions());
+    if (m) { lastBuilt.mesh = m; showMesh(m, false); }
+  }, 150);
+}
+$('smooth').addEventListener('input', rebuild);
+$('fill').addEventListener('change', rebuild);
+$('units').addEventListener('change', updateStats);
+$('download').addEventListener('click', () => {
+  if (!lastBuilt) return;
+  const obj = toOBJ(lastBuilt.mesh, { units: $('units').value, name: 'sculpt_scan' });
+  const d = new Date(), pad = (x) => String(x).padStart(2, '0');
+  const name = `sculpt-scan-${d.getFullYear()}${pad(d.getMonth() + 1)}${pad(d.getDate())}-${pad(d.getHours())}${pad(d.getMinutes())}.obj`;
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([obj], { type: 'text/plain' }));
+  a.download = name;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+});
+// ?demo=1 : build a simulated scan (a 16 cm ball) and open the review screen — for trying the UI anywhere
+if (new URLSearchParams(location.search).get('demo')) {
+  const v = new Volume(0.3, 0.25, 0.3, 96), C = [0, 0.08, 0], r = 0.08;
+  for (let view = 0; view < 36; view++) {
+    const az = view / 36 * Math.PI * 2, el = 0.35 + 0.25 * (view % 3), R = 0.55;
+    const cam = [R * Math.cos(az) * Math.cos(el), 0.08 + R * Math.sin(el), R * Math.sin(az) * Math.cos(el)];
+    for (let k = 0; k < 4000; k++) {
+      const tg = [(Math.random() - 0.5) * 0.3, Math.random() * 0.22, (Math.random() - 0.5) * 0.3];
+      let d = tg.map((x, i) => x - cam[i]); const L = Math.hypot(...d); d = d.map((x) => x / L);
+      const oc = cam.map((x, i) => x - C[i]), b = oc[0] * d[0] + oc[1] * d[1] + oc[2] * d[2], disc = b * b - (oc[0] ** 2 + oc[1] ** 2 + oc[2] ** 2 - r * r);
+      let t = 2.5, n = d.map((x) => -x);
+      if (disc >= 0 && -b - Math.sqrt(disc) > 0) { t = -b - Math.sqrt(disc); const p = cam.map((x, i) => x + d[i] * t); n = p.map((x, i) => (x - C[i]) / r); }
+      else if (d[1] < 0) { t = (-0.003 - cam[1]) / d[1]; n = [0, 1, 0]; }
+      t += (Math.random() - 0.5) * 0.006;
+      v.addPoint(cam.map((x, i) => x + d[i] * t), n, cam);
+    }
+  }
+  lastBuilt = { vol: v, mesh: buildMesh(v, readOptions()) };
+  showReview();
+}
+
+$('again').addEventListener('click', () => {
+  $('review').style.display = 'none';
+  $('home').style.display = 'block';
+  startSession();
+});
+</script>
+</body>
+</html>
